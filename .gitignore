@@ -1,0 +1,4 @@
+*.tlog
+*.raw
+__pycache__
+*.parm

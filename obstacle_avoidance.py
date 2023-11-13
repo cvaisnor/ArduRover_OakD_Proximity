@@ -3,6 +3,7 @@
 import cv2
 import numpy as np
 import time
+import math
 
 import depthai as dai
 from pymavlink import mavutil
@@ -146,7 +147,7 @@ with dai.Device(pipeline) as device:
 
             # Print distance in meters and draw bounding box around ROI
 
-            cv2.putText(frame, "{:.1f} m".format(distance_in_meters), (xmin + 10, ymin + 20), fontType, 0.6, color)
+            cv2.putText(frame, f"{distance_in_meters:.2}m", (xmin + 10, ymin + 20), fontType, 0.6, color)
 
             ##################
             # send distance sensor data to flight controller
@@ -156,8 +157,8 @@ with dai.Device(pipeline) as device:
             if current_time - last_distance_sensor_time > 1/DISTANCE_SENSOR_FREQUENCY:
                 jetson_nano.mav.distance_sensor_send(
                     time_boot_ms=0,  # timestamp in ms since system boot
-                    min_distance=40,  # minimum distance the sensor can measure (cm)
-                    max_distance=900,  # maximum distance the sensor can measure (cm)
+                    min_distance=20,  # minimum distance the sensor can measure (cm)
+                    max_distance=2000,  # maximum distance the sensor can measure (cm)
                     current_distance=int(distance),  # current distance measured (cm)
                     type=4,  # type of distance sensor: 0 = laser, 4 = unknown. See MAV_DISTANCE_SENSOR
                     id=1,  # onboard ID of the sensor
@@ -169,7 +170,7 @@ with dai.Device(pipeline) as device:
 
 
             # DEBUG print distance sensor data
-            print('Distance Reading:', distance, 'm')
+            print('Distance Reading:', f"{distance_in_meters:.3}", 'm')
 
         # !!! Show the frame
         cv2.imshow("RGB", frame)

@@ -1,15 +1,16 @@
-#!/usr/bin/env python3
+# from: https://discuss.ardupilot.org/t/simple-object-avoidance-using-oak-d-lite-camera-and-pymavlink-is-not-working/103145/10
 
 import cv2
-import depthai as dai
 import numpy as np
-import math
+import time
 
-stepSize = 0.05
+import depthai as dai
+from pymavlink import mavutil
 
-newConfig = False
+########################## 
+# Setup DepthAI pipeline #
+##########################
 
-# Create pipeline
 pipeline = dai.Pipeline()
 
 # Define sources and outputs
@@ -59,7 +60,34 @@ stereo.depth.link(spatialLocationCalculator.inputDepth)
 spatialLocationCalculator.out.link(xoutSpatialData.input)
 xinSpatialCalcConfig.out.link(spatialLocationCalculator.inputConfig)
 
+# Create RGB camera
+camRgb = pipeline.create(dai.node.ColorCamera)
+camRgb.setPreviewSize(640, 360)
+camRgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
+
+# Create XLinkOut for RGB frames
+xoutRgb = pipeline.create(dai.node.XLinkOut)
+xoutRgb.setStreamName("rgb")
+camRgb.preview.link(xoutRgb.input)
+
+##########################
+# Setup MAVLINK connection #
+##########################
+
+# Create a MAVLink connection
+jetson_nano = mavutil.mavlink_connection('/dev/ttyTHS1', baud=57600)
+
+# Distance sensor frequency should be much faster than heartbeat
+HEARTBEAT_FREQUENCY = 1  # 1 Hz
+DISTANCE_SENSOR_FREQUENCY = 30  # 30 Hz
+
+last_heartbeat_time = time.time()
+last_distance_sensor_time = time.time()
+
+##########################
 # Connect to device and start pipeline
+##########################
+
 with dai.Device(pipeline) as device:
 
     # Output queue will be used to get the depth frames from the outputs defined above
@@ -69,103 +97,83 @@ with dai.Device(pipeline) as device:
 
     color = (255, 255, 255)
 
-    # print("Use WASD keys to move ROI!")
+    #!!! rgb output
+    rgbQueue = device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
 
     while True:
         inDepth = depthQueue.get() # Blocking call, will wait until a new data has arrived
 
-        depthFrame = inDepth.getFrame() # depthFrame values are in millimeters
+        inRgb = rgbQueue.get()
 
-        depth_downscaled = depthFrame[::4]
-        if np.all(depth_downscaled == 0):
-            min_depth = 0  # Set a default minimum depth value when all elements are zero
-        else:
-            min_depth = np.percentile(depth_downscaled[depth_downscaled != 0], 1)
-        max_depth = np.percentile(depth_downscaled, 99)
-        depthFrameColor = np.interp(depthFrame, (min_depth, max_depth), (0, 255)).astype(np.uint8)
-        depthFrameColor = cv2.applyColorMap(depthFrameColor, cv2.COLORMAP_HOT)
+        # Convert the retrieved rgb frame into a numpy array
+        frame = inRgb.getCvFrame()
 
         spatialData = spatialCalcQueue.get().getSpatialLocations()
+
+        ##################
+        # send heartbeat to flight controller
+        ##################
+
+        # Send a heartbeat message every second. https://mavlink.io/en/mavgen_python/#heartbeat
+        current_time = time.time()
+        
+        if current_time - last_heartbeat_time > HEARTBEAT_FREQUENCY:
+            # The arguments for the heartbeat message are type, autopilot, base_mode, custom_mode, system_status, and mavlink_version.
+            jetson_nano.mav.heartbeat_send(mavutil.mavlink.MAV_TYPE_ONBOARD_CONTROLLER,
+                            mavutil.mavlink.MAV_AUTOPILOT_GENERIC,
+                            0,
+                            0,
+                            0)
+            last_heartbeat_time = current_time
+
         for depthData in spatialData:
             roi = depthData.config.roi
-            roi = roi.denormalize(width=depthFrameColor.shape[1], height=depthFrameColor.shape[0])
+            roi = roi.denormalize(width=frame.shape[1], height=frame.shape[0])  # adjust this to frame's dimensions
             xmin = int(roi.topLeft().x)
             ymin = int(roi.topLeft().y)
             xmax = int(roi.bottomRight().x)
             ymax = int(roi.bottomRight().y)
 
-            coords = depthData.spatialCoordinates
-            distance = math.sqrt(coords.x ** 2 + coords.y ** 2 + coords.z ** 2) / 1000  # Conversion of mm to meters
-
             depthMin = depthData.depthMin
             depthMax = depthData.depthMax
 
+            coords = depthData.spatialCoordinates # X, Y, Z in mm
+            distance_in_meters = math.sqrt(coords.x ** 2 + coords.y ** 2 + coords.z ** 2) / 1000  # convert to m
+            distance = math.sqrt(coords.x ** 2 + coords.y ** 2 + coords.z ** 2) / 10  # convert to cm (needed for MAVLink message)
+
             fontType = cv2.FONT_HERSHEY_TRIPLEX
-            cv2.rectangle(depthFrameColor, (xmin, ymin), (xmax, ymax), color, 1)
-            # cv2.putText(depthFrameColor, f"X: {int(depthData.spatialCoordinates.x)} mm", (xmin + 10, ymin + 20), fontType, 0.5, color)
-            # cv2.putText(depthFrameColor, f"Y: {int(depthData.spatialCoordinates.y)} mm", (xmin + 10, ymin + 35), fontType, 0.5, color)
-            # cv2.putText(depthFrameColor, f"Z: {int(depthData.spatialCoordinates.z)} mm", (xmin + 10, ymin + 50), fontType, 0.5, color)
-        
-            cv2.rectangle(depthFrameColor, (xmin, ymin), (xmax, ymax), color, thickness=2)
-            cv2.putText(depthFrameColor, "{:.1f} m".format(distance), (xmin + 10, ymin + 20), fontType, 0.6, color)
-        
-        
-        # Show the frame
-        cv2.imshow("depth", depthFrameColor)
+            cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), color, thickness=2)
 
-        if distance < 2.0:
-            print("Obstacle detected!")
-            # send MAVLink message to stop the rover
+            # Print distance in meters and draw bounding box around ROI
+
+            cv2.putText(frame, "{:.1f} m".format(distance_in_meters), (xmin + 10, ymin + 20), fontType, 0.6, color)
+
+            ##################
+            # send distance sensor data to flight controller
+            ##################
+            
+            # https://mavlink.io/en/messages/common.html#DISTANCE_SENSOR
+            if current_time - last_distance_sensor_time > 1/DISTANCE_SENSOR_FREQUENCY:
+                jetson_nano.mav.distance_sensor_send(
+                    time_boot_ms=0,  # timestamp in ms since system boot
+                    min_distance=40,  # minimum distance the sensor can measure (cm)
+                    max_distance=900,  # maximum distance the sensor can measure (cm)
+                    current_distance=int(distance),  # current distance measured (cm)
+                    type=4,  # type of distance sensor: 0 = laser, 4 = unknown. See MAV_DISTANCE_SENSOR
+                    id=1,  # onboard ID of the sensor
+                    orientation=0,  # forward facing, see MAV_SENSOR_ORIENTATION
+                    covariance=0,  # measurement covariance in centimeters, 0 for unknown / invalid readings
+                )
+                # reset last distance sensor time
+                last_distance_sensor_time = current_time
 
 
-        key = cv2.waitKey(1)
+            # DEBUG print distance sensor data
+            print('Distance Reading:', distance, 'm')
+
+        # !!! Show the frame
+        cv2.imshow("RGB", frame)
+
+        key = cv2.waitKey(1) & 0xFF  # Get ASCII value of key
         if key == ord('q'):
             break
-        # elif key == ord('w'):
-        #     if topLeft.y - stepSize >= 0:
-        #         topLeft.y -= stepSize
-        #         bottomRight.y -= stepSize
-        #         newConfig = True
-        # elif key == ord('a'):
-        #     if topLeft.x - stepSize >= 0:
-        #         topLeft.x -= stepSize
-        #         bottomRight.x -= stepSize
-        #         newConfig = True
-        # elif key == ord('s'):
-        #     if bottomRight.y + stepSize <= 1:
-        #         topLeft.y += stepSize
-        #         bottomRight.y += stepSize
-        #         newConfig = True
-        # elif key == ord('d'):
-        #     if bottomRight.x + stepSize <= 1:
-        #         topLeft.x += stepSize
-        #         bottomRight.x += stepSize
-        #         newConfig = True
-        # elif key == ord('1'):
-        #     calculationAlgorithm = dai.SpatialLocationCalculatorAlgorithm.MEAN
-        #     print('Switching calculation algorithm to MEAN!')
-        #     newConfig = True
-        # elif key == ord('2'):
-        #     calculationAlgorithm = dai.SpatialLocationCalculatorAlgorithm.MIN
-        #     print('Switching calculation algorithm to MIN!')
-        #     newConfig = True
-        # elif key == ord('3'):
-        #     calculationAlgorithm = dai.SpatialLocationCalculatorAlgorithm.MAX
-        #     print('Switching calculation algorithm to MAX!')
-        #     newConfig = True
-        # elif key == ord('4'):
-        #     calculationAlgorithm = dai.SpatialLocationCalculatorAlgorithm.MODE
-        #     print('Switching calculation algorithm to MODE!')
-        #     newConfig = True
-        # elif key == ord('5'):
-        #     calculationAlgorithm = dai.SpatialLocationCalculatorAlgorithm.MEDIAN
-        #     print('Switching calculation algorithm to MEDIAN!')
-        #     newConfig = True
-
-        # if newConfig:
-        #     config.roi = dai.Rect(topLeft, bottomRight)
-        #     config.calculationAlgorithm = calculationAlgorithm
-        #     cfg = dai.SpatialLocationCalculatorConfig()
-        #     cfg.addROI(config)
-        #     spatialCalcConfigInQueue.send(cfg)
-        #     newConfig = False

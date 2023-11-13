@@ -1,4 +1,4 @@
-# from: https://discuss.ardupilot.org/t/simple-object-avoidance-using-oak-d-lite-camera-and-pymavlink-is-not-working/103145/10
+# modification from: https://discuss.ardupilot.org/t/simple-object-avoidance-using-oak-d-lite-camera-and-pymavlink-is-not-working/103145/10
 
 import cv2
 import numpy as np
@@ -8,10 +8,12 @@ import math
 import depthai as dai
 from pymavlink import mavutil
 
-########################## 
-# Setup DepthAI pipeline #
-##########################
+### ArduPilot Param Updates ###
+# RNGFND1_TYPE = 10 (MAVLink)
+# PRX_TYPE = 2 (MAVLink)
+# Search for obstacle params and configure as needed
 
+# Setup DepthAI pipeline #
 pipeline = dai.Pipeline()
 
 # Define sources and outputs
@@ -77,47 +79,30 @@ camRgb.preview.link(xoutRgb.input)
 
 # Create a MAVLink connection
 jetson_nano = mavutil.mavlink_connection('/dev/ttyTHS1', baud=57600)
-
-# Distance sensor frequency should be much faster than heartbeat
 HEARTBEAT_FREQUENCY = 1  # 1 Hz
-DISTANCE_SENSOR_FREQUENCY = 30  # 30 Hz
+DISTANCE_SENSOR_FREQUENCY = 30  # 30 Hz 
 
 last_heartbeat_time = time.time()
 last_distance_sensor_time = time.time()
 
-##########################
-# Connect to device and start pipeline
-##########################
-
+# starting pipeline
 with dai.Device(pipeline) as device:
 
     # Output queue will be used to get the depth frames from the outputs defined above
     depthQueue = device.getOutputQueue(name="depth", maxSize=4, blocking=False)
     spatialCalcQueue = device.getOutputQueue(name="spatialData", maxSize=4, blocking=False)
     spatialCalcConfigInQueue = device.getInputQueue("spatialCalcConfig")
-
     color = (255, 255, 255)
-
-    #!!! rgb output
     rgbQueue = device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
 
     while True:
         inDepth = depthQueue.get() # Blocking call, will wait until a new data has arrived
-
         inRgb = rgbQueue.get()
-
-        # Convert the retrieved rgb frame into a numpy array
-        frame = inRgb.getCvFrame()
-
+        frame = inRgb.getCvFrame() # Convert rgb frame to numpy array
         spatialData = spatialCalcQueue.get().getSpatialLocations()
-
-        ##################
-        # send heartbeat to flight controller
-        ##################
 
         # Send a heartbeat message every second. https://mavlink.io/en/mavgen_python/#heartbeat
         current_time = time.time()
-        
         if current_time - last_heartbeat_time > HEARTBEAT_FREQUENCY:
             # The arguments for the heartbeat message are type, autopilot, base_mode, custom_mode, system_status, and mavlink_version.
             jetson_nano.mav.heartbeat_send(mavutil.mavlink.MAV_TYPE_ONBOARD_CONTROLLER,
@@ -146,33 +131,27 @@ with dai.Device(pipeline) as device:
             cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), color, thickness=2)
 
             # Print distance in meters and draw bounding box around ROI
-
             cv2.putText(frame, f"{distance_in_meters:.2}m", (xmin + 10, ymin + 20), fontType, 0.6, color)
 
-            ##################
-            # send distance sensor data to flight controller
-            ##################
-            
-            # https://mavlink.io/en/messages/common.html#DISTANCE_SENSOR
+            # send distance sensor data to flight controller: https://mavlink.io/en/messages/common.html#DISTANCE_SENSOR 
             if current_time - last_distance_sensor_time > 1/DISTANCE_SENSOR_FREQUENCY:
                 jetson_nano.mav.distance_sensor_send(
-                    time_boot_ms=0,  # timestamp in ms since system boot
-                    min_distance=20,  # minimum distance the sensor can measure (cm)
-                    max_distance=2000,  # maximum distance the sensor can measure (cm)
-                    current_distance=int(distance),  # current distance measured (cm)
-                    type=4,  # type of distance sensor: 0 = laser, 4 = unknown. See MAV_DISTANCE_SENSOR
-                    id=1,  # onboard ID of the sensor
-                    orientation=0,  # forward facing, see MAV_SENSOR_ORIENTATION
-                    covariance=0,  # measurement covariance in centimeters, 0 for unknown / invalid readings
+                    time_boot_ms=0,
+                    min_distance=20, # minimum distance the sensor can measure (cm)
+                    max_distance=2000, # maximum distance the sensor can measure (cm)
+                    current_distance=int(distance), # current distance measured (cm)
+                    type=4, # 0 = laser, 4 = unknown. See MAV_DISTANCE_SENSOR
+                    id=1, # onboard ID of the sensor
+                    orientation=0, # forward facing, see MAV_SENSOR_ORIENTATION
+                    covariance=0, # measurement covariance in centimeters, 0 for unknown / invalid readings
                 )
                 # reset last distance sensor time
                 last_distance_sensor_time = current_time
 
-
-            # DEBUG print distance sensor data
+            # print distance sensor data
             print('Distance Reading:', f"{distance_in_meters:.3}", 'm')
 
-        # !!! Show the frame
+        # Show color frame
         cv2.imshow("RGB", frame)
 
         key = cv2.waitKey(1) & 0xFF  # Get ASCII value of key

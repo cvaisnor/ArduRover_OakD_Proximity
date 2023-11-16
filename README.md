@@ -6,6 +6,8 @@
 - Computer: [Jetson Nano 4GB](https://developer.nvidia.com/embedded/jetson-nano-developer-kit)
     - Power Module: [18650 Single Cell Li-Ion Shield](https://a.co/d/eSGOiVn)
 
+- PCA9685 PWM Driver: [Adafruit 16-Channel 12-bit PWM/Servo Driver](https://www.adafruit.com/product/815)
+
 - Camera: [OAK-D-Lite](https://shop.luxonis.com/products/oak-d-lite-1?variant=42583102456031)
 
 - LiDAR: RPLidar A2M12
@@ -18,6 +20,7 @@ OAK-D-Lite examples from: https://github.com/luxonis/depthai-python/tree/main/ex
 
 ---
 
+From ArduRover build:
 ![Rover](imgs/IMG_6536.jpg)
 
 ![Rover](imgs/IMG_6537.jpg)
